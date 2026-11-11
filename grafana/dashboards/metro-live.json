@@ -1,0 +1,195 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": ["metro", "realtime", "clickhouse"],
+  "time": {"from": "now-6h", "to": "now"},
+  "timepicker": {"refresh_intervals": ["5s", "10s", "30s", "1m"]},
+  "timezone": "utc",
+  "title": "Метро Москвы — live",
+  "uid": "metro-live",
+  "version": 1,
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Входы, пассажиров/мин (последние 5 мин)",
+      "id": 1,
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+      "datasource": {"type": "grafana-clickhouse-datasource", "uid": "ch-metro"},
+      "fieldConfig": {"defaults": {"unit": "short", "displayName": "${__field.labels.metric}", "color": {"mode": "thresholds"}, "thresholds": {"steps": [{"color": "green", "value": null}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "area"},
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "sql",
+          "format": "timeSeries",
+          "rawSql": "SELECT now() AS t, 'пассажиров/мин' AS metric, round(sum(passengers) / 5.0, 0) AS value FROM metro.station_load_1m WHERE direction = 'in' AND minute > (SELECT max(minute) FROM metro.station_load_1m) - INTERVAL 5 MINUTE"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Событий в сутках",
+      "id": 2,
+      "gridPos": {"h": 4, "w": 5, "x": 6, "y": 0},
+      "datasource": {"type": "grafana-clickhouse-datasource", "uid": "ch-metro"},
+      "fieldConfig": {"defaults": {"unit": "short", "thresholds": {"steps": [{"color": "blue", "value": null}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value"},
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "sql",
+          "format": "table",
+          "rawSql": "SELECT count() AS \"событий\" FROM metro.turnstile_events_all WHERE event_date = today()"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Сверка слоёв: сырые минус агрегаты (должно быть 0)",
+      "id": 3,
+      "gridPos": {"h": 4, "w": 5, "x": 11, "y": 0},
+      "datasource": {"type": "grafana-clickhouse-datasource", "uid": "ch-metro"},
+      "fieldConfig": {"defaults": {"unit": "none", "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "red", "value": 5000}, {"color": "red", "value": -5000}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background"},
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "sql",
+          "format": "table",
+          "rawSql": "SELECT (SELECT count() FROM metro.turnstile_events_all) - (SELECT toUInt64(sum(passengers)) FROM metro.station_load_1m) AS \"расхождение\""
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Макс. заполняемость поезда (за 1 ч)",
+      "id": 4,
+      "gridPos": {"h": 4, "w": 8, "x": 16, "y": 0},
+      "datasource": {"type": "grafana-clickhouse-datasource", "uid": "ch-metro"},
+      "fieldConfig": {"defaults": {"unit": "percentunit", "decimals": 1, "max": 1, "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 0.5}, {"color": "red", "value": 0.8}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value", "graphMode": "none"},
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "sql",
+          "format": "table",
+          "rawSql": "WITH m AS (SELECT train_id, minute, sum(delta) AS d FROM metro.train_load_1m GROUP BY train_id, minute), r AS (SELECT train_id, minute, sum(d) OVER (PARTITION BY train_id ORDER BY minute ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS onboard FROM m) SELECT max(onboard / cap) AS \"LF\" FROM r INNER JOIN (SELECT train_id, num_cars * total_per_car AS cap FROM metro.trains) AS tr USING (train_id) WHERE minute > (SELECT max(minute) FROM metro.train_load_1m) - INTERVAL 1 HOUR"
+        }
+      ]
+    },
+    {
+      "type": "geomap",
+      "title": "Карта загрузки станций (последние 5 минут)",
+      "id": 5,
+      "gridPos": {"h": 14, "w": 12, "x": 0, "y": 4},
+      "datasource": {"type": "grafana-clickhouse-datasource", "uid": "ch-metro"},
+      "options": {
+        "basemap": {"type": "osm-standard", "config": {}},
+        "layers": [
+          {
+            "type": "markers",
+            "name": "Станции метро",
+            "location": {"mode": "coords", "latitude": "latitude", "longitude": "longitude"},
+            "tooltip": true,
+            "config": {
+              "showLegend": true,
+              "style": {
+                "color": {"mode": "palette", "field": "пассажиров", "config": {"palette": {"type": "continuous-GrYlRd"}}},
+                "size": {"mode": "field", "field": "пассажиров", "fixed": 5, "min": 4, "max": 28},
+                "symbol": {"mode": "fixed", "fixed": "img/icons/marker/circle.svg"},
+                "opacity": 0.85
+              }
+            }
+          }
+        ],
+        "view": {"id": "coords", "lat": 55.75, "lon": 37.62, "zoom": 10},
+        "controls": {"showZoom": true, "showAttribution": true},
+        "tooltip": {"mode": "details"}
+      },
+      "fieldConfig": {"defaults": {"unit": "short", "custom": {}}, "overrides": []},
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "sql",
+          "format": "table",
+          "rawSql": "WITH cur AS (SELECT station_id, sum(passengers) AS passengers FROM metro.station_load_1m WHERE minute > (SELECT max(minute) FROM metro.station_load_1m) - INTERVAL 5 MINUTE GROUP BY station_id) SELECT dictGet('metro.dict_stations', 'lat', cur.station_id) AS latitude, dictGet('metro.dict_stations', 'lon', cur.station_id) AS longitude, dictGet('metro.dict_stations', 'name', cur.station_id) AS name, cur.passengers AS \"пассажиров\" FROM cur"
+        }
+      ]
+    },
+    {
+      "type": "bargauge",
+      "title": "Топ-12 станций сейчас (вход+выход, 5 мин)",
+      "id": 6,
+      "gridPos": {"h": 14, "w": 12, "x": 12, "y": 4},
+      "datasource": {"type": "grafana-clickhouse-datasource", "uid": "ch-metro"},
+      "options": {"reduceOptions": {"values": true, "calcs": []}, "orientation": "horizontal", "displayMode": "gradient", "showUnfilled": true},
+      "fieldConfig": {"defaults": {"unit": "short", "color": {"mode": "continuous-GrYlRd"}}, "overrides": []},
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "sql",
+          "format": "table",
+          "rawSql": "WITH cur AS (SELECT station_id, sum(passengers) AS passengers FROM metro.station_load_1m WHERE minute > (SELECT max(minute) FROM metro.station_load_1m) - INTERVAL 5 MINUTE GROUP BY station_id) SELECT dictGet('metro.dict_stations', 'name', cur.station_id) AS \"станция\", cur.passengers AS \"пассажиров\" FROM cur ORDER BY passengers DESC LIMIT 12"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Поток по станциям (входы, топ-8 за диапазон)",
+      "id": 7,
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 18},
+      "datasource": {"type": "grafana-clickhouse-datasource", "uid": "ch-metro"},
+      "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "lineWidth": 1, "fillOpacity": 8, "showPoints": "never"}, "displayName": "${__field.labels.metric}", "unit": "short"}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "right", "calcs": ["sum"]}, "tooltip": {"mode": "multi"}},
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "sql",
+          "format": "timeSeries",
+          "rawSql": "SELECT minute AS t, concat(dictGet('metro.dict_stations', 'name', station_id), ' (вход)') AS metric, sum(passengers) AS value FROM metro.station_load_1m WHERE direction = 'in' AND $__timeFilter(minute) AND station_id GLOBAL IN (SELECT station_id FROM metro.station_load_1m WHERE direction = 'in' AND $__timeFilter(minute) GROUP BY station_id ORDER BY sum(passengers) DESC LIMIT 8) GROUP BY t, metric ORDER BY t"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Поток по линиям (вход/выход)",
+      "id": 8,
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 18},
+      "datasource": {"type": "grafana-clickhouse-datasource", "uid": "ch-metro"},
+      "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never"}, "displayName": "${__field.labels.metric}", "unit": "short"}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "right", "calcs": ["sum"]}, "tooltip": {"mode": "multi"}},
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "sql",
+          "format": "timeSeries",
+          "rawSql": "SELECT minute AS t, concat(dictGet('metro.dict_lines', 'name', line_id), ' / ', if(direction = 'in', 'вход', 'выход')) AS metric, sum(passengers) AS value FROM metro.line_load_1m WHERE $__timeFilter(minute) GROUP BY t, metric ORDER BY t"
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Заполняемость поездов (пик за последние 10 минут)",
+      "id": 9,
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 27},
+      "datasource": {"type": "grafana-clickhouse-datasource", "uid": "ch-metro"},
+      "fieldConfig": {
+        "defaults": {"custom": {"align": "auto", "cellOptions": {"type": "auto"}}},
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "LF"}, "properties": [{"id": "unit", "value": "percentunit"}, {"id": "custom.cellOptions", "value": {"type": "color-background"}}, {"id": "max", "value": 1}, {"id": "color", "value": {"mode": "continuous-GrYlRd"}}]}
+        ]
+      },
+      "options": {"showHeader": true},
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "sql",
+          "format": "table",
+          "rawSql": "WITH m AS (SELECT train_id, minute, sum(delta) AS d FROM metro.train_load_1m GROUP BY train_id, minute), r AS (SELECT train_id, minute, sum(d) OVER (PARTITION BY train_id ORDER BY minute ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS onboard FROM m), last10 AS (SELECT train_id, max_by(onboard, minute) AS onboard FROM r WHERE minute > (SELECT max(minute) FROM metro.train_load_1m) - INTERVAL 10 MINUTE GROUP BY train_id) SELECT toString(last10.train_id) AS \"поезд\", dictGet('metro.dict_lines', 'name', toUInt16(intDiv(last10.train_id, 10000))) AS \"линия\", t.num_cars AS \"вагонов\", t.total_per_car AS \"в вагоне\", last10.onboard AS \"на борту\", round(last10.onboard / (t.num_cars * t.total_per_car), 3) AS LF FROM last10 INNER JOIN (SELECT train_id, any(num_cars) AS num_cars, any(total_per_car) AS total_per_car FROM metro.trains GROUP BY train_id) AS t USING (train_id) ORDER BY LF DESC LIMIT 15"
+        }
+      ]
+    }
+  ]
+}

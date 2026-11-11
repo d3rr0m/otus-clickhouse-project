@@ -1,0 +1,17 @@
+apiVersion: 1
+
+datasources:
+  - name: ClickHouse
+    uid: ch-metro
+    type: grafana-clickhouse-datasource
+    access: proxy
+    isDefault: true
+    jsonData:
+      protocol: http
+      server: ${CH_SERVER}
+      port: 8123
+      username: ${CH_USER}
+      defaultDatabase: ${CH_DATABASE}
+      tlsSkipVerify: true
+    secureJsonData:
+      password: ${CH_PASSWORD}
