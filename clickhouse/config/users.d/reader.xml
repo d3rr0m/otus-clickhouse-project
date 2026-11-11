@@ -1,0 +1,23 @@
+<clickhouse>
+    <profiles>
+        <readonly_profile>
+            <readonly>1</readonly>
+        </readonly_profile>
+    </profiles>
+    <users>
+        <!-- Читатель для внешних запросов/Grafana: read-only, доступ к metro + system.
+             Пароль из env CH_READER_PASSWORD (задается через .env) -->
+        <reader>
+            <password from_env="CH_READER_PASSWORD"/>
+            <networks replace="replace">
+                <ip>::/0</ip>
+            </networks>
+            <profile>readonly_profile</profile>
+            <quota>default</quota>
+            <allow_databases>
+                <database>metro</database>
+                <database>system</database>
+            </allow_databases>
+        </reader>
+    </users>
+</clickhouse>

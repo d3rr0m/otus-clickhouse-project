@@ -1,0 +1,271 @@
+name: metro-analytics
+
+# Резолв имён узлов CH должен работать до их запуска (загрузка remote_servers) ->
+# статические IP + extra_hosts. При конфликте подсети на хосте поменяйте CH_SUBNET.
+x-ch-hosts: &ch-hosts
+  - "ch-shard1-r1:172.28.101.11"
+  - "ch-shard1-r2:172.28.101.12"
+  - "ch-shard2-r1:172.28.101.13"
+  - "ch-shard2-r2:172.28.101.14"
+
+x-clickhouse-common: &clickhouse-common
+  image: clickhouse/clickhouse-server:26.8
+  restart: unless-stopped
+  environment: &clickhouse-env
+    CLICKHOUSE_DB: ${CLICKHOUSE_DB:-metro}
+    # прокидывается в users.d/admin.xml (from_env) и в remote_servers;
+    # CLICKHOUSE_USER/CLICKHOUSE_PASSWORD намеренно НЕ задаем,
+    # чтобы entrypoint не писал default-user.xml в ro-монтированный users.d
+    CH_ADMIN_PASSWORD: ${CLICKHOUSE_PASSWORD:?CLICKHOUSE_PASSWORD is required, see .env.example}
+    CH_READER_PASSWORD: ${CLICKHOUSE_READER_PASSWORD:?CLICKHOUSE_READER_PASSWORD is required, see .env.example}
+  ulimits:
+    nofile:
+      soft: 262144
+      hard: 262144
+  extra_hosts: *ch-hosts
+  healthcheck:
+    test: ["CMD-SHELL", "clickhouse-client --query 'SELECT 1'"]
+    interval: 10s
+    timeout: 5s
+    retries: 15
+    start_period: 40s
+
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.7.1
+    container_name: metro-zookeeper
+    restart: unless-stopped
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+      ZOO_HEAP_SIZE: "256"
+    volumes:
+      - zk_data:/var/lib/zookeeper/data
+      - zk_log:/var/lib/zookeeper/log
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/commands/srvr >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  kafka:
+    image: confluentinc/cp-kafka:7.7.1
+    container_name: metro-kafka
+    restart: unless-stopped
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_NUM_PARTITIONS: "6"
+      KAFKA_DEFAULT_REPLICATION_FACTOR: "1"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+      KAFKA_LOG_RETENTION_HOURS: "24"
+      KAFKA_HEAP_OPTS: "-Xms256m -Xmx512m"
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:9092 --list"]
+      interval: 15s
+      timeout: 15s
+      retries: 12
+      start_period: 40s
+
+  # ==== ClickHouse cluster: 2 shards x 2 replicas ====
+  # Макросы {shard}/{replica} и interserver_http_host — из env узлов
+  # (clickhouse/config/config.d/macros.xml, from_env).
+  # init-SQL (docker-entrypoint-initdb.d) монтируется только на ch-shard1-r1:
+  # DDL ON CLUSTER metro_cluster разносит схему на все узлы.
+
+  ch-shard1-r2:
+    <<: *clickhouse-common
+    container_name: ch-shard1-r2
+    hostname: ch-shard1-r2
+    networks:
+      internal:
+        ipv4_address: 172.28.101.12
+      public:
+    environment:
+      <<: *clickhouse-env
+      CH_SHARD: "1"
+      CH_REPLICA: ch-shard1-r2
+      CH_HOST: ch-shard1-r2
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    volumes:
+      - ch1r2_data:/var/lib/clickhouse
+      - ./clickhouse/config/config.d:/etc/clickhouse-server/config.d:ro
+      - ./clickhouse/config/users.d:/etc/clickhouse-server/users.d:ro
+      - ./data:/var/lib/clickhouse/user_files/metro_seed:ro
+
+  ch-shard2-r1:
+    <<: *clickhouse-common
+    container_name: ch-shard2-r1
+    hostname: ch-shard2-r1
+    networks:
+      internal:
+        ipv4_address: 172.28.101.13
+      public:
+    environment:
+      <<: *clickhouse-env
+      CH_SHARD: "2"
+      CH_REPLICA: ch-shard2-r1
+      CH_HOST: ch-shard2-r1
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    ports:
+      - "${CLICKHOUSE_HTTP_PORT_SHARD2:-8124}:8123"
+      - "${CLICKHOUSE_TCP_PORT_SHARD2:-9001}:9000"
+    volumes:
+      - ch2r1_data:/var/lib/clickhouse
+      - ./clickhouse/config/config.d:/etc/clickhouse-server/config.d:ro
+      - ./clickhouse/config/users.d:/etc/clickhouse-server/users.d:ro
+      - ./data:/var/lib/clickhouse/user_files/metro_seed:ro
+
+  ch-shard2-r2:
+    <<: *clickhouse-common
+    container_name: ch-shard2-r2
+    hostname: ch-shard2-r2
+    networks:
+      internal:
+        ipv4_address: 172.28.101.14
+      public:
+    environment:
+      <<: *clickhouse-env
+      CH_SHARD: "2"
+      CH_REPLICA: ch-shard2-r2
+      CH_HOST: ch-shard2-r2
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    volumes:
+      - ch2r2_data:/var/lib/clickhouse
+      - ./clickhouse/config/config.d:/etc/clickhouse-server/config.d:ro
+      - ./clickhouse/config/users.d:/etc/clickhouse-server/users.d:ro
+      - ./data:/var/lib/clickhouse/user_files/metro_seed:ro
+
+  ch-shard1-r1:
+    <<: *clickhouse-common
+    container_name: ch-shard1-r1
+    hostname: ch-shard1-r1
+    networks:
+      internal:
+        ipv4_address: 172.28.101.11
+      public:
+    environment:
+      <<: *clickhouse-env
+      CH_SHARD: "1"
+      CH_REPLICA: ch-shard1-r1
+      CH_HOST: ch-shard1-r1
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      ch-shard1-r2:
+        condition: service_healthy
+      ch-shard2-r1:
+        condition: service_healthy
+      ch-shard2-r2:
+        condition: service_healthy
+    ports:
+      - "${CLICKHOUSE_HTTP_PORT:-8123}:8123"
+      - "${CLICKHOUSE_TCP_PORT:-9000}:9000"
+    volumes:
+      - ch1r1_data:/var/lib/clickhouse
+      - ./clickhouse/config/config.d:/etc/clickhouse-server/config.d:ro
+      - ./clickhouse/config/users.d:/etc/clickhouse-server/users.d:ro
+      - ./data:/var/lib/clickhouse/user_files/metro_seed:ro
+      - ./clickhouse/init:/docker-entrypoint-initdb.d:ro
+
+  generator:
+    build: ./generator
+    container_name: metro-generator
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+      ch-shard1-r1:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_TOPIC: ${KAFKA_TOPIC_EVENTS:-metro.turnstile.events}
+      CH_URL: http://ch-shard1-r1:8123/
+      CH_USER: ${CLICKHOUSE_USER:-admin}
+      CH_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      SIM_EVENTS_PER_DAY: ${SIM_EVENTS_PER_DAY:-1500000}
+      SIM_BACKFILL_HOURS: ${SIM_BACKFILL_HOURS:-72}
+    volumes:
+      - ./data:/data:ro
+    networks:
+      - internal
+
+  grafana:
+    image: grafana/grafana-oss:11.2.0
+    container_name: metro-grafana
+    restart: unless-stopped
+    depends_on:
+      ch-shard1-r1:
+        condition: service_healthy
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD is required, see .env.example}
+      GF_INSTALL_PLUGINS: grafana-clickhouse-datasource
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      CH_SERVER: ch-shard1-r1
+      CH_DATABASE: ${CLICKHOUSE_DB:-metro}
+      CH_USER: ${CLICKHOUSE_USER:-admin}
+      CH_PASSWORD: ${CLICKHOUSE_PASSWORD}
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning
+      - ./grafana/dashboards:/var/lib/grafana/dashboards
+    networks:
+      - public
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://127.0.0.1:3000/api/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 90s
+
+networks:
+  internal:
+    ipam:
+      config:
+        - subnet: 172.28.101.0/24
+  public:
+
+volumes:
+  zk_data:
+  zk_log:
+  kafka_data:
+  ch1r1_data:
+  ch1r2_data:
+  ch2r1_data:
+  ch2r2_data:
+  grafana_data:

@@ -1,0 +1,24 @@
+<clickhouse>
+    <users>
+        <!-- Встроенный default: без пароля, только изнутри контейнера
+             (entrypoint, healthcheck, init-SQL, make ch) -->
+        <default>
+            <networks replace="replace">
+                <ip>127.0.0.1</ip>
+                <ip>::1</ip>
+            </networks>
+        </default>
+
+        <!-- Администратор: пароль из env CH_ADMIN_PASSWORD (задается в .env),
+             access_management для создания reader и других пользователей -->
+        <admin>
+            <password from_env="CH_ADMIN_PASSWORD"/>
+            <networks replace="replace">
+                <ip>::/0</ip>
+            </networks>
+            <profile>default</profile>
+            <quota>default</quota>
+            <access_management>1</access_management>
+        </admin>
+    </users>
+</clickhouse>

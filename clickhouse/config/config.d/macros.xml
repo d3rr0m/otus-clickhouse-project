@@ -1,0 +1,9 @@
+<clickhouse>
+    <!-- Значения подставляются из env контейнера (CH_SHARD / CH_REPLICA / CH_HOST) -->
+    <macros>
+        <cluster>metro_cluster</cluster>
+        <shard from_env="CH_SHARD"/>
+        <replica from_env="CH_REPLICA"/>
+    </macros>
+    <interserver_http_host from_env="CH_HOST"/>
+</clickhouse>

@@ -1,0 +1,55 @@
+<clickhouse>
+    <!-- Кластер metro_cluster: 2 шарда x 2 реплики.
+         Межузловые запросы (Distributed, remote) идут под пользователем admin,
+         пароль берется из env CH_ADMIN_PASSWORD (from_env). -->
+    <remote_servers>
+        <metro_cluster>
+            <shard>
+                <internal_replication>true</internal_replication>
+                <replica>
+                    <host>ch-shard1-r1</host>
+                    <port>9000</port>
+                    <user>admin</user>
+                    <password from_env="CH_ADMIN_PASSWORD"/>
+                </replica>
+                <replica>
+                    <host>ch-shard1-r2</host>
+                    <port>9000</port>
+                    <user>admin</user>
+                    <password from_env="CH_ADMIN_PASSWORD"/>
+                </replica>
+            </shard>
+            <shard>
+                <internal_replication>true</internal_replication>
+                <replica>
+                    <host>ch-shard2-r1</host>
+                    <port>9000</port>
+                    <user>admin</user>
+                    <password from_env="CH_ADMIN_PASSWORD"/>
+                </replica>
+                <replica>
+                    <host>ch-shard2-r2</host>
+                    <port>9000</port>
+                    <user>admin</user>
+                    <password from_env="CH_ADMIN_PASSWORD"/>
+                </replica>
+            </shard>
+        </metro_cluster>
+    </remote_servers>
+
+    <!-- ZooKeeper используется и Kafka, и репликацией ClickHouse -->
+    <zookeeper>
+        <node>
+            <host>zookeeper</host>
+            <port>2181</port>
+        </node>
+    </zookeeper>
+
+    <distributed_ddl>
+        <path>/clickhouse/task_queue/ddl</path>
+        <cleanup_delay_period>60</cleanup_delay_period>
+        <task_max_lifetime>86400</task_max_lifetime>
+    </distributed_ddl>
+
+    <max_server_memory_usage_to_ram_ratio>0.3</max_server_memory_usage_to_ram_ratio>
+</clickhouse>
